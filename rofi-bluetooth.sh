@@ -11,4 +11,9 @@ is_power_on() {
 	fi
 }
 
+list_paired_devices() {
+	local paired_devices=$(bluetoothctl devices Paired)
+	echo "$paired_devices" | awk -F' ' '{print $3}'
+}
 
+list_paired_devices | wofi --dmenu
