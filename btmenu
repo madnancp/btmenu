@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#
+# btmenu - Bluetooth menu controller
+#
+# _|          _|
+# _|_|_|    _|_|_|_|  _|_|_|  _|_|      _|_|    _|_|_|    _|    _|
+# _|    _|    _|      _|    _|    _|  _|_|_|_|  _|    _|  _|    _|
+# _|    _|    _|      _|    _|    _|  _|        _|    _|  _|    _|
+# _|_|_|        _|_|  _|    _|    _|    _|_|_|  _|    _|    _|_|_|
+#
+#
+# Author: Adnan Muhammed <etc.adnan@gmail.com>
+# License: MIT
+# Repo: https://github.com/madnancp/btmenu
+
+
+DIR=$(cd $(dirname $0) && pwd)
+source "$DIR/bluetooth.sh"
+
+
+list_devices
+choice=$(printf "%s\n" "${!DEVICES[@]}" | wofi --show dmenu -i)
+
+if [ "$choice" ]; then
+	echo "you have choosed this ${DEVICES[$choice]}"
+fi
+

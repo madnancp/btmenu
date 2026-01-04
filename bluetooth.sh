@@ -14,12 +14,17 @@
 # Repo: https://github.com/madnancp/btmenu
 
 
-is_power_on() {
-	local power_status=$(bluetoothctl show | awk -F': ' '/Powered/ {print $2}')
-	if [[ $power_status == "yes" ]]; then
-		exit 0
+declare -A DEVICES # key(name) : value(mac addr)
+
+is_bt_on() {
+	bluetoothctl show | awk -F': ' '/Powered/ {print $2}' | grep -q "yes"
+}
+
+toggle_bt_power() {
+	if is_bt_on; then
+		bluetoothctl power off
 	else
-		exit 1
+		bluetoothctl power on
 	fi
 }
 
@@ -28,23 +33,25 @@ pair_device() {
 	$(bluetoothctl pair "$device_mac")
 }
 
-
-list_paired_devices() {
-	mapfile -t paired_device_macs < <(
-		bluetoothctl devices Paired | awk '{print $2}'
-		)
-
-	for mac in "${paired_device_macs[@]}"; do
-		device_name=$(bluetoothctl info "$mac" | awk -F': ' '/Name/ {print $2}')
-		printf '%s\n' "$device_name"
-	done
-	echo
+toggle_device_connection() {
+	local device=$1
+	local is_connected=$(bluetoothctl info $1 | awk -F': ' '/Connected/ {print $2}')
+	if [ "$is_connected" = "yes" ]; then
+		echo "Device $1 already connected, Disconnecting..."
+		bluetoothctl disconnect $1
+	else
+		echo "Device $1 not connected, connecting..."
+		bluetoothctl connect $1
+	fi
 }
 
-if  is_power_on; then
-	printf "Scan\nList Paired\nBack" | wofi --show dmenu -i
-else
-	printf "Power On\nBack" | wofi --show dmenu -i
-fi
+list_devices() {
+	mapfile -t paired_device_macs < <(
+		bluetoothctl devices Paired
+	)
 
-
+	for device in "${paired_device_macs[@]}"; do
+		local device_name=$(echo "$device" | awk -F' ' '{$1=$2="";sub(/^ */, "");print}')
+		DEVICES[$device_name]=$(echo "$device" | awk -F' ' '{print $2}')
+	done
+}
