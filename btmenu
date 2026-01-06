@@ -17,11 +17,25 @@
 DIR=$(cd $(dirname $0) && pwd)
 source "$DIR/bluetooth.sh"
 
-
-list_devices
-choice=$(printf "%s\n" "${!DEVICES[@]}" | wofi --show dmenu -i)
-
-if [ "$choice" ]; then
-	echo "you have choosed this ${DEVICES[$choice]}"
+if ! is_bt_on; then
+	options="Power On\nExit"
+	choice=$(printf "$options" | wofi --show dmenu -i -p "Bluetooth")
+	case "$choice" in
+		"Power On") toggle_bt_power; \
+			notify-send -i bluetooth "Bluetooth" "Powering on...";;
+		Exit) exit 0;;
+	esac
 fi
 
+options_while_bt_on="Scan\nShow Paired Devices\nTurn Off Bluetooth\nExit"
+choice=$(printf "$options_while_bt_on" | wofi --show dmenu -i -p "Choose a option to continue: ")
+
+case "$choice" in
+	Scan) echo "You choose scan";;
+	"Show Paired Devices") list_devices; \
+		selected_device=$(printf "%s\n" "${!DEVICES[@]}" | wofi --show dmenu -i -p "Select a device"); \
+		echo "you choosed $selected_device with ${DEVICES[$selected_device]}";;
+	"Turn Off Bluetooth") toggle_bt_power; \
+			notify-send -i bluetooth "Bluetooth" "Powering off...";;
+	Exit) exit 0;;
+esac
