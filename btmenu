@@ -17,25 +17,66 @@
 DIR=$(cd $(dirname $0) && pwd)
 source "$DIR/bluetooth.sh"
 
+menu(){
+	wofi --show dmenu -i -p $1
+}
+
+landing_menu() {
+	printf "Power On\nExit" | menu "Bluetooth"
+}
+
+main_menu() {
+	printf "Scan\nShow Paired Devices\nTurn Off Bluetooth\nExit" | \
+		menu "Choose a option to continue: "
+}
+
+submenu_show_paired_devices() {
+	list_devices
+	printf "%s\n" "${!DEVICES[@]}" | menu "Select a device"
+}
+
+submenu_scan() {
+	echo "Not Implemented"
+}
+
+submenu_device_actions() {
+	printf "Connect\nPair\nForget\nBack" | \
+		menu "Select an action"
+}
+
+handle_show_paired_devices() {
+	local selected=$(submenu_show_paired_devices);
+	local device="${DEVICES[$selected]}"
+	handle_device_actions "$device"
+}
+
+handle_device_actions() {
+	local selected=$(submenu_device_actions)
+	local device=$1
+	case "$selected" in
+		Connect) connect_bt_device "$device";;
+		Pair) pair_bt_device "$device";;
+		Forget) forget_bt_device "$device";;
+		Back) handle_show_paired_devices;;
+	esac
+}
+
 if ! is_bt_on; then
-	options="Power On\nExit"
-	choice=$(printf "$options" | wofi --show dmenu -i -p "Bluetooth")
-	case "$choice" in
+	landing_choice=$(landing_menu)
+	case "$landing_choice" in
 		"Power On") toggle_bt_power; \
 			notify-send -i bluetooth "Bluetooth" "Powering on...";;
-		Exit) exit 0;;
-	esac
+	Exit) exit 0;;
+esac
 fi
 
-options_while_bt_on="Scan\nShow Paired Devices\nTurn Off Bluetooth\nExit"
-choice=$(printf "$options_while_bt_on" | wofi --show dmenu -i -p "Choose a option to continue: ")
+main_menu_choice=$(main_menu)
 
-case "$choice" in
-	Scan) echo "You choose scan";;
-	"Show Paired Devices") list_devices; \
-		selected_device=$(printf "%s\n" "${!DEVICES[@]}" | wofi --show dmenu -i -p "Select a device"); \
-		echo "you choosed $selected_device with ${DEVICES[$selected_device]}";;
+case "$main_menu_choice" in
+	Scan) submenu_scan;;
+	"Show Paired Devices") handle_show_paired_devices;;
 	"Turn Off Bluetooth") toggle_bt_power; \
 			notify-send -i bluetooth "Bluetooth" "Powering off...";;
 	Exit) exit 0;;
 esac
+
