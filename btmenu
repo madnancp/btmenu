@@ -14,11 +14,14 @@
 # Repo: https://github.com/madnancp/btmenu
 
 
+
 DIR=$(cd $(dirname $0) && pwd)
 source "$DIR/bluetooth.sh"
 
+log_info "btmenu started"
+
 menu(){
-	wofi --show dmenu -i -p $1
+	wofi --show dmenu -i -p "$1" --width 400 --height 300
 }
 
 landing_menu() {
@@ -31,8 +34,15 @@ main_menu() {
 }
 
 submenu_show_paired_devices() {
+	log_info "submenu_show_paired_devices() entered"
+
 	list_devices
-	printf "%s\n" "${!DEVICES[@]}" | menu "Select a device"
+
+	log_info "Devices available: ${!DEVICES[*]}"
+	local devices=$(printf "%s\n" "${!DEVICES[@]}")
+	local available_devices=("$devices" "Back")
+
+	SELECTED_PAIRED_DEVICE=$(printf "%s\n" "${available_devices[@]}" | menu "Select a device")
 }
 
 submenu_scan() {
@@ -40,13 +50,51 @@ submenu_scan() {
 }
 
 submenu_device_actions() {
-	printf "Connect\nPair\nForget\nBack" | \
+	printf "Connect\nForget\nBack" | \
 		menu "Select an action"
 }
 
+handle_main_menu() {
+	local main_menu_choice=$(main_menu)
+
+	[[ -z "$main_menu_choice" ]] && return
+
+	case "$main_menu_choice" in
+		Scan) submenu_scan;;
+		"Show Paired Devices") handle_show_paired_devices;;
+		"Turn Off Bluetooth") toggle_bt_power; \
+			notify-send -i bluetooth "Bluetooth" "Powering off...";;
+	Exit) exit 0;;
+esac
+}
+
 handle_show_paired_devices() {
-	local selected=$(submenu_show_paired_devices);
-	local device="${DEVICES[$selected]}"
+	log_info "handle_show_paired_devices() entered"
+
+
+	log_info "Available Devices before show paired devices: ${!DEVICES[@]}"
+	submenu_show_paired_devices
+
+	[[ -z "$SELECTED_PAIRED_DEVICE" ]] && {
+		log_info "No device selected"
+			return
+		}
+
+	if [ "$SELECTED_PAIRED_DEVICE" == "Back" ]; then
+		handle_main_menu
+		return
+	fi
+
+	log_info "Available Devices: ${!DEVICES[@]}"
+	local device="${DEVICES[$SELECTED_PAIRED_DEVICE]}"
+
+	log_info "Resolved MAC: [$device]"
+
+	[[ -z "$SELECTED_PAIRED_DEVICE" ]] && {
+		log_info "Device lookup failed"
+			return
+		}
+
 	handle_device_actions "$device"
 }
 
@@ -61,22 +109,24 @@ handle_device_actions() {
 	esac
 }
 
-if ! is_bt_on; then
-	landing_choice=$(landing_menu)
-	case "$landing_choice" in
-		"Power On") toggle_bt_power; \
-			notify-send -i bluetooth "Bluetooth" "Powering on...";;
-	Exit) exit 0;;
-esac
-fi
 
-main_menu_choice=$(main_menu)
+main() {
+	if ! is_bt_on; then
+		local landing_choice=$(landing_menu)
 
-case "$main_menu_choice" in
-	Scan) submenu_scan;;
-	"Show Paired Devices") handle_show_paired_devices;;
-	"Turn Off Bluetooth") toggle_bt_power; \
-			notify-send -i bluetooth "Bluetooth" "Powering off...";;
-	Exit) exit 0;;
-esac
+		[[ -z "$landing_choice" ]] && {
+			log_info "No landing choice selected, exit"
+					return
+				}
 
+		case "$landing_choice" in
+			"Power On") toggle_bt_power; \
+				notify-send -i bluetooth "Bluetooth" "Powering on...";;
+		Exit) exit 0;;
+	esac
+	fi
+
+	handle_main_menu
+}
+
+main "$@"
