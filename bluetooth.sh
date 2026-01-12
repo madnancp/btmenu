@@ -82,3 +82,24 @@ list_devices() {
 
 	log_info "Final device keys: ${!DEVICES[*]}"
 }
+
+scan_devices() {
+	local scan_output="$(mktemp)"
+	bluetoothctl --timeout 15 scan on > "$scan_output" &
+	scan_pid=$!
+	spinner='|/-\'
+	i=0
+
+	while kill -0 "$scan_pid" 2>/dev/null; do
+		printf "\rScanning... %c" "${spinner:i++%4:1}"
+		sleep 0.2
+	done
+
+	wait "$scan_pid"
+
+	mapfile -t all_things < "$scan_output"
+	rm "$scan_output"
+
+	echo "Scan completed"
+	echo "Scan Result is $all_things"
+}
