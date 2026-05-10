@@ -1,116 +1,204 @@
 #!/usr/bin/env bash
 #
-# btmenu - Bluetooth menu controller
-#
-# _|          _|
-# _|_|_|    _|_|_|_|  _|_|_|  _|_|      _|_|    _|_|_|    _|    _|
-# _|    _|    _|      _|    _|    _|  _|_|_|_|  _|    _|  _|    _|
-# _|    _|    _|      _|    _|    _|  _|        _|    _|  _|    _|
-# _|_|_|        _|_|  _|    _|    _|    _|_|_|  _|    _|    _|_|_|
-#
+# btmenu - bluetooth.sh
+# Bluetooth helper library — sourced by btmenu
 #
 # Author: Adnan Muhammed <etc.adnan@gmail.com>
 # License: MIT
 # Repo: https://github.com/madnancp/btmenu
 
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "bluetooth.sh is a library. Source it, don't run it directly." >&2
+    exit 1
+fi
 
-declare -A DEVICES # key(name) : value(mac addr)
-declare -A SCANNED_DEVICES
+readonly BT_TIMEOUT_SCAN=15
+readonly BT_TIMEOUT_CONNECT=10
 
-log_info() {
-	echo "[INFO]: $*" >&2
+declare -A DEVICE_ICONS=(
+    [phone]="󰄜"
+    [audio-headset]="󰋋"
+    [audio-headphones]="󰋋"
+    [audio-card]="󰓃"
+    [computer]="󰌢"
+    [keyboard]="󰌌"
+    [mouse]="󰍽"
+    [gaming]="󰊗"
+    [unknown]="󰂯"
+)
+
+log_info()  { [[ "${BTMENU_DEBUG:-0}" == "1" ]] && echo "[INFO]  $*" >&2; true; }
+log_warn()  { echo "[WARN]  $*" >&2; }
+log_error() { echo "[ERROR] $*" >&2; }
+
+check_deps() {
+    local missing=()
+    local deps=(bluetoothctl wofi notify-send)
+    for dep in "${deps[@]}"; do
+        command -v "$dep" &>/dev/null || missing+=("$dep")
+    done
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing required dependencies: ${missing[*]}"
+        log_error "Install them and try again."
+        exit 1
+    fi
 }
 
 is_bt_on() {
-	bluetoothctl show | awk -F': ' '/Powered/ {print $2}' | grep -q "yes"
+    bluetoothctl show 2>/dev/null \
+        | awk -F': ' '/^\s*Powered:/ { print $2; exit }' \
+        | grep -q "yes"
+}
+
+bt_adapter_exists() {
+    bluetoothctl show 2>/dev/null | grep -q "Controller"
+}
+
+bt_local_name() {
+    bluetoothctl show 2>/dev/null \
+        | awk -F': ' '/^\s*Name:/ { print $2; exit }'
+}
+
+bt_local_mac() {
+    bluetoothctl show 2>/dev/null \
+        | awk '/^\s*Controller/ { print $2; exit }'
 }
 
 toggle_bt_power() {
-	if is_bt_on; then
-		bluetoothctl power off
-	else
-		bluetoothctl power on
-	fi
+    if is_bt_on; then
+        log_info "Turning Bluetooth off"
+        bluetoothctl power off &>/dev/null
+    else
+        log_info "Turning Bluetooth on"
+        bluetoothctl power on &>/dev/null
+    fi
 }
 
 is_device_connected() {
-	bluetoothctl info "$1" | awk -F': ' '/Connected/ {print $2}'
+    local mac="$1"
+    bluetoothctl info "$mac" 2>/dev/null \
+        | awk -F': ' '/^\s*Connected:/ { print $2; exit }'
+}
+
+is_device_paired() {
+    local mac="$1"
+    bluetoothctl info "$mac" 2>/dev/null \
+        | awk -F': ' '/^\s*Paired:/ { print $2; exit }'
+}
+
+is_device_trusted() {
+    local mac="$1"
+    bluetoothctl info "$mac" 2>/dev/null \
+        | awk -F': ' '/^\s*Trusted:/ { print $2; exit }'
+}
+
+get_device_type() {
+    local mac="$1"
+    local icon_key
+    icon_key=$(bluetoothctl info "$mac" 2>/dev/null \
+        | awk -F': ' '/^\s*Icon:/ { print $2; exit }')
+    echo "${icon_key:-unknown}"
+}
+
+get_device_battery() {
+    local mac="$1"
+    local pct
+    pct=$(bluetoothctl info "$mac" 2>/dev/null \
+        | awk -F'[()%]' '/Battery Percentage/ { print $2; exit }')
+    if [[ -n "$pct" ]]; then
+        echo "${pct}%"
+    fi
+}
+
+get_device_icon() {
+    local type="$1"
+    echo "${DEVICE_ICONS[$type]:-${DEVICE_ICONS[unknown]}}"
+}
+
+#
+# Device operations 
+pair_bt_device() {
+    local mac="$1"
+    log_info "Pairing $mac"
+    bluetoothctl pair "$mac" &>/dev/null
+}
+
+trust_bt_device() {
+    local mac="$1"
+    log_info "Trusting $mac"
+    bluetoothctl trust "$mac" &>/dev/null
 }
 
 connect_bt_device() {
-	bluetoothctl connect "$1"
+    local mac="$1"
+    log_info "Connecting $mac"
+    timeout "$BT_TIMEOUT_CONNECT" bluetoothctl connect "$mac" &>/dev/null
 }
 
 disconnect_bt_device() {
-	bluetoothctl disconnect "$1"
+    local mac="$1"
+    log_info "Disconnecting $mac"
+    bluetoothctl disconnect "$mac" &>/dev/null
 }
 
 forget_bt_device() {
-        bluetoothctl remove "$1"
+    local mac="$1"
+    log_info "Removing $mac"
+    bluetoothctl remove "$mac" &>/dev/null
 }
 
-toggle_device_connection() {
-	local device=$1
-	if [ "$(is_device_connected $device)" = "yes" ]; then
-		echo "Device $device already connected, Disconnecting..."
-		disconnect_bt_device "$device"
-	else
-		echo "Device $device not connected, connecting..."
-		connect_bt_device "$device"
-	fi
+# Device listing 
+declare -A DEVICES=()
+
+list_paired_devices() {
+    DEVICES=()
+    local raw
+    while IFS= read -r line; do
+        # Each line: "Device AA:BB:CC:DD:EE:FF Device Name"
+        local mac name
+        mac=$(awk '{print $2}' <<<"$line")
+        name=$(awk '{$1=$2=""; sub(/^ +/, ""); print}' <<<"$line")
+        [[ -n "$mac" && -n "$name" ]] || continue
+        DEVICES["$name"]="$mac"
+        log_info "Paired device: [$name] -> [$mac]"
+    done < <(bluetoothctl devices Paired 2>/dev/null)
 }
 
-list_devices() {
-	log_info "list_devices() called"
-
-	mapfile -t paired_device_macs < <(
-		bluetoothctl devices Paired
-	)
-
-	log_info "Raw paired devices:"
-	for d in "${paired_device_macs[@]}"; do
-		log_info "  $d"
-	done
-
-	DEVICES=()
-
-	for device in "${paired_device_macs[@]}"; do
-		local device_name=$(echo "$device" | awk -F' ' '{$1=$2="";sub(/^ */, "");print}')
-		local mac=$(echo "$device" | awk -F' ' '{print $2}')
-		DEVICES["$device_name"]="$mac"
-		log_info "Mapped: [$device_name] -> [$mac]"
-	done
-
-	log_info "Final device keys: ${!DEVICES[*]}"
+list_connected_devices() {
+    bluetoothctl devices Connected 2>/dev/null \
+        | awk '{print $2}'
 }
+
+declare -A SCANNED_DEVICES=()
 
 scan_devices() {
-	log_info "scan_device() called"
+    SCANNED_DEVICES=()
+    log_info "Starting ${BT_TIMEOUT_SCAN}s scan"
 
-	local scan_output="$(mktemp)"
-	bluetoothctl --timeout 15 scan on > "$scan_output" &
-	local scan_pid=$!
+    local tmp
+    tmp=$(mktemp /tmp/btmenu_scan.XXXXXX)
 
-	notify-send -t 15000 -i bluetooth "Bluetooth" "Scanning..."
+    bluetoothctl --timeout "$BT_TIMEOUT_SCAN" scan on >"$tmp" 2>&1 &
+    local scan_pid=$!
+    wait "$scan_pid"
 
-	wait "$scan_pid"
+    sed -i -r \
+        -e 's/\r//g' \
+        -e 's/\x1B\[[0-9;]*[mGKHF]//g' \
+        "$tmp"
 
-	sed -i -r \
-		-e 's/\r//g' \
-		-e 's/\x1B\[[0-9;]*[mK]//g' \
-		"$scan_output"
+    while IFS= read -r line; do
+        [[ "$line" =~ \[NEW\]\ Device\ ([0-9A-Fa-f:]{17})\ (.+) ]] || continue
+        local mac="${BASH_REMATCH[1]}"
+        local name="${BASH_REMATCH[2]}"
 
-	mapfile -t all_things < "$scan_output"
-	rm "$scan_output"
+        [[ "$name" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] && continue
+        [[ -z "${name// /}" ]] && continue
 
-	for line in "${all_things[@]}"; do
-		[[ "$line" =~ ^\[(NEW)\]\ Device ]] || continue
-		local mac=$(awk '{print $3}' <<<"$line")
-		local name=$(cut -d' ' -f4- <<<"$line")
+        SCANNED_DEVICES["$name"]="$mac"
+        log_info "Scanned: [$name] -> [$mac]"
+    done <"$tmp"
 
-		SCANNED_DEVICES["$name"]=$mac
-		log_info "Scanned device Mapped: [$name] -> [$mac]"
-	done
-
-	log_info "Final Scanned device keys: ${!SCANNED_DEVICES[*]}"
+    rm -f "$tmp"
+    log_info "Scan complete. Found ${#SCANNED_DEVICES[@]} devices."
 }

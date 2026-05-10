@@ -8,170 +8,377 @@
 # _|    _|    _|      _|    _|    _|  _|        _|    _|  _|    _|
 # _|_|_|        _|_|  _|    _|    _|    _|_|_|  _|    _|    _|_|_|
 #
-#
 # Author: Adnan Muhammed <etc.adnan@gmail.com>
 # License: MIT
 # Repo: https://github.com/madnancp/btmenu
 
+set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
-DIR=$(cd $(dirname $0) && pwd)
-source "$DIR/bluetooth.sh"
+# Support both local dev layout and installed layout (/usr/lib/btmenu/)
+if [[ -f "$SCRIPT_DIR/bluetooth.sh" ]]; then
+    source "$SCRIPT_DIR/bluetooth.sh"
+elif [[ -f "/usr/lib/btmenu/bluetooth.sh" ]]; then
+    source "/usr/lib/btmenu/bluetooth.sh"
+else
+    echo "[ERROR] Cannot find bluetooth.sh library." >&2
+    exit 1
+fi
 
-log_info "btmenu started"
-
-menu(){
-	wofi --show dmenu -i -p "$1" --width 400 --height 300
+menu() {
+    local prompt="${1:-btmenu}"
+    wofi \
+        --show dmenu \
+        --insensitive \
+        --prompt "$prompt" \
+        --width "${BTMENU_WIDTH:-420}" \
+        --height "${BTMENU_HEIGHT:-340}" \
+        --no-actions \
+        2>/dev/null
 }
 
-landing_menu() {
-	printf "Power On\nExit" | menu "Bluetooth"
+notify() {
+    local summary="$1"
+    local body="${2:-}"
+    notify-send -i bluetooth -a btmenu "$summary" "$body" 2>/dev/null || true
 }
 
-main_menu() {
-	printf "Scan\nShow Paired Devices\nTurn Off Bluetooth\nExit" | \
-		menu "Choose a option to continue: "
+notify_success() { notify "$1" "${2:-}"; }
+notify_error()   { notify-send -i bluetooth -a btmenu -u critical "$1" "${2:-}" 2>/dev/null || true; }
+notify_info()    { notify-send -i bluetooth -a btmenu -t 4000 "$1" "${2:-}" 2>/dev/null || true; }
+
+declare -A MENU_MAP=()
+
+build_device_label() {
+    local name="$1"
+    local mac="$2"
+    local type battery icon label connected
+
+    type=$(get_device_type "$mac")
+    icon=$(get_device_icon "$type")
+    battery=$(get_device_battery "$mac")
+    connected=$(is_device_connected "$mac")
+
+    label="${icon}  ${name}  (${mac})"
+
+    [[ "$connected" == "yes" ]] && label+="   ● Connected"
+    [[ -n "$battery" ]]         && label+="   🔋 ${battery}"
+
+    echo "$label"
 }
 
-submenu_show_paired_devices() {
-	log_info "submenu_show_paired_devices() entered"
-
-	list_devices
-
-	log_info "Devices available: ${!DEVICES[*]}"
-	local devices=$(printf "%s\n" "${!DEVICES[@]}")
-	local available_devices=("$devices" "Back")
-
-	SELECTED_PAIRED_DEVICE=$(printf "%s\n" "${available_devices[@]}" | menu "Select a device")
+menu_landing() {
+    printf "󰂯  Power On\n  Exit" | menu "Bluetooth is Off"
 }
 
-submenu_scan() {
-	log_info "submenu_scan() entered"
+menu_main() {
+    local bt_name bt_mac
+    bt_name=$(bt_local_name)
+    bt_mac=$(bt_local_mac)
 
-	scan_devices
-
-	log_info "Scanned Devices: ${!SCANNED_DEVICES[*]}"
-	if [ "${#SCANNED_DEVICES[@]}" -eq 0 ]; then
-		log_info "No Device found in scan."
-		notify-send -i bluetooth "Bluetooth" "No device found in scan."
-		handle_main_menu
-		return
-	fi
-
-	local devices=$(printf "%s\n" "${!SCANNED_DEVICES[@]}")
-	local available_devices=("$devices" "Back")
-
-	SELECTED_SCANNED_DEVICE=$(printf "%s\n" "${available_devices[@]}" | menu "Choose device")
+    printf "%s\n" \
+        "󰂰  Scan for New Devices" \
+        "󰂴  Show Paired Devices" \
+        "󰂱  Connected Devices" \
+        "󰂳  This Device  ›  ${bt_name}  (${bt_mac})" \
+        "󰀉  Turn Bluetooth Off" \
+        "  Exit" \
+        | menu "Bluetooth"
 }
 
+menu_paired_devices() {
+    local -n _devices=$1
+    MENU_MAP=()
+    local labels=()
 
-submenu_device_actions() {
-	printf "Connect\nForget\nBack" | \
-		menu "Select an action"
+    for name in "${!_devices[@]}"; do
+        local mac="${_devices[$name]}"
+        local label
+        label=$(build_device_label "$name" "$mac")
+        MENU_MAP["$label"]="$mac"
+        labels+=("$label")
+    done
+
+    printf "%s\n" "${labels[@]}" | sort
+}
+
+menu_connected_devices() {
+    local connected_macs
+    mapfile -t connected_macs < <(list_connected_devices)
+
+    if [[ ${#connected_macs[@]} -eq 0 ]]; then
+        notify_info "No Devices Connected" "No Bluetooth devices are currently connected."
+        return 1
+    fi
+
+    MENU_MAP=()
+    local labels=()
+
+    for mac in "${connected_macs[@]}"; do
+        local name type icon battery label
+        name=$(bluetoothctl info "$mac" 2>/dev/null \
+            | awk -F': ' '/^\s*Name:/ {print $2; exit}')
+        type=$(get_device_type "$mac")
+        icon=$(get_device_icon "$type")
+        battery=$(get_device_battery "$mac")
+
+        label="${icon}  ${name:-$mac}  (${mac})   ● Connected"
+        [[ -n "$battery" ]] && label+="   🔋 ${battery}"
+
+        MENU_MAP["$label"]="$mac"
+        labels+=("$label")
+    done
+
+    printf "%s\n" "${labels[@]}" | sort
+}
+
+menu_scanned_devices() {
+    local -n _scanned=$1
+    MENU_MAP=()
+    local labels=()
+
+    for name in "${!_scanned[@]}"; do
+        local mac="${_scanned[$name]}"
+        local type icon label paired_marker=""
+        type=$(get_device_type "$mac")
+        icon=$(get_device_icon "$type")
+        [[ "$(is_device_paired "$mac")" == "yes" ]] && paired_marker="  ✓ Paired"
+
+        label="${icon}  ${name}  (${mac})${paired_marker}"
+        MENU_MAP["$label"]="$mac"
+        labels+=("$label")
+    done
+
+    printf "%s\n" "${labels[@]}" | sort
+}
+
+menu_device_actions() {
+    local name="$1"
+    local mac="$2"
+    local connected paired trusted
+
+    connected=$(is_device_connected "$mac")
+    paired=$(is_device_paired "$mac")
+    trusted=$(is_device_trusted "$mac")
+
+    local actions=()
+    [[ "$connected" == "yes" ]] && actions+=("󰂲  Disconnect") || actions+=("󰂰  Connect")
+    [[ "$paired"    != "yes" ]] && actions+=("󰂴  Pair")
+    [[ "$trusted"   != "yes" ]] && actions+=("󰂵  Trust") || actions+=("󰂵  Untrust")
+    actions+=("󰗨  Forget Device")
+    actions+=("  ← Back")
+
+    local type icon battery prompt
+    type=$(get_device_type "$mac")
+    icon=$(get_device_icon "$type")
+    battery=$(get_device_battery "$mac")
+    prompt="${icon}  ${name}"
+    [[ -n "$battery" ]] && prompt+="  🔋 ${battery}"
+
+    printf "%s\n" "${actions[@]}" | menu "$prompt"
+}
+
+handle_device_action() {
+    local name="$1"
+    local mac="$2"
+    local origin="${3:-paired}"
+
+    while true; do
+        local action
+        action=$(menu_device_actions "$name" "$mac") || { handle_main_menu; return; }
+
+        case "$action" in
+            *Connect)
+                notify_info "Connecting…" "Connecting to ${name}…"
+                if connect_bt_device "$mac"; then
+                    notify_success "Connected" "Connected to ${name}."
+                else
+                    notify_error "Connection Failed" "Could not connect to ${name}."
+                fi
+                ;;
+            *Disconnect)
+                if disconnect_bt_device "$mac"; then
+                    notify_success "Disconnected" "Disconnected from ${name}."
+                else
+                    notify_error "Disconnect Failed" "Could not disconnect from ${name}."
+                fi
+                ;;
+            *Pair)
+                notify_info "Pairing…" "Pairing with ${name}…"
+                if pair_bt_device "$mac"; then
+                    notify_success "Paired" "Paired with ${name}."
+                    trust_bt_device "$mac" && notify_info "Trusted" "${name} is now trusted."
+                else
+                    notify_error "Pairing Failed" "Could not pair with ${name}."
+                fi
+                ;;
+            *"Trust")
+                if trust_bt_device "$mac"; then
+                    notify_success "Trusted" "${name} is now trusted."
+                else
+                    notify_error "Trust Failed" "Could not trust ${name}."
+                fi
+                ;;
+            *"Untrust")
+                if bluetoothctl untrust "$mac" &>/dev/null; then
+                    notify_success "Untrusted" "${name} is no longer trusted."
+                else
+                    notify_error "Untrust Failed" "Could not untrust ${name}."
+                fi
+                ;;
+            *"Forget Device")
+                if forget_bt_device "$mac"; then
+                    notify_success "Forgotten" "${name} has been removed."
+                    handle_main_menu
+                    return
+                else
+                    notify_error "Remove Failed" "Could not remove ${name}."
+                fi
+                ;;
+            *"← Back"|"")
+                if [[ "$origin" == "scanned" ]]; then
+                    handle_scan
+                else
+                    handle_paired_devices
+                fi
+                return
+                ;;
+        esac
+    done
+}
+
+handle_paired_devices() {
+    list_paired_devices
+
+    if [[ ${#DEVICES[@]} -eq 0 ]]; then
+        notify_info "No Paired Devices" "Pair a device first using Scan."
+        handle_main_menu
+        return
+    fi
+
+    local selected
+    selected=$(
+        { menu_paired_devices DEVICES; printf "  ← Back\n"; } | menu "Paired Devices"
+    ) || { handle_main_menu; return; }
+
+    [[ -z "$selected" || "$selected" == *"← Back"* ]] && { handle_main_menu; return; }
+
+    local mac="${MENU_MAP[$selected]:-}"
+    [[ -z "$mac" ]] && { log_warn "No MAC for label: $selected"; handle_main_menu; return; }
+
+    local name="$selected"
+    for n in "${!DEVICES[@]}"; do
+        [[ "${DEVICES[$n]}" == "$mac" ]] && { name="$n"; break; }
+    done
+
+    handle_device_action "$name" "$mac" "paired"
+}
+
+handle_connected_devices() {
+    local selected
+    selected=$(
+        { menu_connected_devices; printf "  ← Back\n"; } | menu "Connected Devices"
+    ) || { handle_main_menu; return; }
+
+    [[ -z "$selected" || "$selected" == *"← Back"* ]] && { handle_main_menu; return; }
+
+    local mac="${MENU_MAP[$selected]:-}"
+    [[ -z "$mac" ]] && { handle_main_menu; return; }
+
+    local name
+    name=$(bluetoothctl info "$mac" 2>/dev/null \
+        | awk -F': ' '/^\s*Name:/ {print $2; exit}')
+
+    handle_device_action "${name:-$mac}" "$mac" "paired"
+}
+
+handle_scan() {
+    notify_info "Scanning…" "Scanning for nearby devices (${BT_TIMEOUT_SCAN}s)…"
+
+    scan_devices
+
+    if [[ ${#SCANNED_DEVICES[@]} -eq 0 ]]; then
+        notify_error "Nothing Found" "No Bluetooth devices found nearby."
+        handle_main_menu
+        return
+    fi
+
+    local selected
+    selected=$(
+        { menu_scanned_devices SCANNED_DEVICES; printf "  ← Back\n"; } | menu "Scan Results"
+    ) || { handle_main_menu; return; }
+
+    [[ -z "$selected" || "$selected" == *"← Back"* ]] && { handle_main_menu; return; }
+
+    local mac="${MENU_MAP[$selected]:-}"
+    [[ -z "$mac" ]] && { handle_main_menu; return; }
+
+    local name="$selected"
+    for n in "${!SCANNED_DEVICES[@]}"; do
+        [[ "${SCANNED_DEVICES[$n]}" == "$mac" ]] && { name="$n"; break; }
+    done
+
+    handle_device_action "$name" "$mac" "scanned"
+}
+
+handle_this_device() {
+    local bt_name bt_mac info_text
+    bt_name=$(bt_local_name)
+    bt_mac=$(bt_local_mac)
+
+    info_text="This device is broadcasting as:\n\n${bt_name}\n${bt_mac}"
+    notify_info "This Device" "Name: ${bt_name}  |  MAC: ${bt_mac}"
+
+    printf "  OK" | menu "${bt_name}  (${bt_mac})" >/dev/null || true
+    handle_main_menu
 }
 
 handle_main_menu() {
-	local main_menu_choice=$(main_menu)
+    local choice
+    choice=$(menu_main) || exit 0
 
-	[[ -z "$main_menu_choice" ]] && return
-
-	case "$main_menu_choice" in
-		Scan) handle_submenu_scan;;
-		"Show Paired Devices") handle_show_paired_devices;;
-		"Turn Off Bluetooth") toggle_bt_power; \
-			notify-send -i bluetooth "Bluetooth" "Powering off...";;
-	Exit) exit 0;;
-esac
+    case "$choice" in
+        *"Scan for New Devices")        handle_scan ;;
+        *"Show Paired Devices")         handle_paired_devices ;;
+        *"Connected Devices")           handle_connected_devices ;;
+        *"This Device"*)                handle_this_device ;;
+        *"Turn Bluetooth Off")
+            toggle_bt_power
+            notify_info "Bluetooth Off" "Bluetooth has been turned off."
+            exit 0
+            ;;
+        *"Exit"|"")
+            exit 0
+            ;;
+    esac
 }
-
-handle_show_paired_devices() {
-	log_info "handle_show_paired_devices() entered"
-
-
-	log_info "Available Devices before show paired devices: ${!DEVICES[@]}"
-	submenu_show_paired_devices
-
-	[[ -z "$SELECTED_PAIRED_DEVICE" ]] && {
-		log_info "No device selected"
-			return
-		}
-
-	if [ "$SELECTED_PAIRED_DEVICE" == "Back" ]; then
-		handle_main_menu
-		return
-	fi
-
-	log_info "Available Devices: ${!DEVICES[@]}"
-	local device="${DEVICES[$SELECTED_PAIRED_DEVICE]}"
-
-	log_info "Resolved MAC: [$device]"
-
-	[[ -z "$SELECTED_PAIRED_DEVICE" ]] && {
-		log_info "Device lookup failed"
-			return
-		}
-
-	handle_device_actions "$device"
-}
-
-handle_submenu_scan() {
-	log_info "handle_submenu_scan() entered"
-
-
-	submenu_scan
-
-	[[ -z "$SELECTED_SCANNED_DEVICE" ]] && {
-		log_info "No device selected"
-			return
-		}
-
-	if [ "$SELECTED_SCANNED_DEVICE" == "Back" ]; then
-		handle_main_menu
-		return
-	fi
-
-	log_info "Available Scanned Devices: ${!SCANNED_DEVICES[@]}"
-	local device="${SCANNED_DEVICES[$SELECTED_SCANNED_DEVICE]}"
-
-	log_info "Resolved MAC: [$device]"
-
-	[[ -z "$SELECTED_SCANNED_DEVICE" ]] && {
-		log_info "Device lookup failed"
-			return
-		}
-
-	handle_device_actions "$device"
-}
-
-handle_device_actions() {
-	local selected=$(submenu_device_actions)
-	local device=$1
-	case "$selected" in
-		Connect) connect_bt_device "$device";;
-		Pair) pair_bt_device "$device";;
-		Forget) forget_bt_device "$device";;
-		Back) handle_show_paired_devices;;
-	esac
-}
-
 
 main() {
-	if ! is_bt_on; then
-		local landing_choice=$(landing_menu)
+    check_deps
 
-		[[ -z "$landing_choice" ]] && {
-			log_info "No landing choice selected, exit"
-					return
-				}
+    if ! bt_adapter_exists; then
+        notify_error "No Bluetooth Adapter" "No Bluetooth adapter found on this system."
+        exit 1
+    fi
 
-		case "$landing_choice" in
-			"Power On") toggle_bt_power; \
-				notify-send -i bluetooth "Bluetooth" "Powering on...";;
-		Exit) exit 0;;
-	esac
-	fi
+    if ! is_bt_on; then
+        local landing_choice
+        landing_choice=$(menu_landing) || exit 0
 
-	handle_main_menu
+        case "$landing_choice" in
+            *"Power On")
+                toggle_bt_power
+                notify_info "Bluetooth On" "Bluetooth is powered on."
+                sleep 1
+                ;;
+            *"Exit"|"")
+                exit 0
+                ;;
+        esac
+    fi
+
+    handle_main_menu
 }
 
 main "$@"
