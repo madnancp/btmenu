@@ -5,8 +5,43 @@ router = typer.Typer()
 
 
 @router.command()
-def device() -> None:
-    asyncio.run(_device())
+def list() -> None:
+    typer.echo("Not impleted")
+
+
+@router.command()
+def info(mac_addr: str = typer.Argument(...)) -> None:
+    typer.echo(f"Not impleted: MAC {mac_addr}")
+
+
+@router.command()
+def connect(mac_addr: str = typer.Argument(...)) -> None:
+    typer.echo(f"Not impleted: MAC {mac_addr}")
+
+
+@router.command()
+def disconnect(mac_addr: str = typer.Argument(...)) -> None:
+    typer.echo(f"Not impleted: MAC {mac_addr}")
+
+
+@router.command()
+def pair(mac_addr: str = typer.Argument(...)) -> None:
+    typer.echo(f"Not impleted: MAC {mac_addr}")
+
+
+@router.command()
+def trust(mac_addr: str = typer.Argument(...)) -> None:
+    typer.echo(f"Not impleted: MAC {mac_addr}")
+
+
+@router.command()
+def untrust(mac_addr: str = typer.Argument(...)) -> None:
+    typer.echo(f"Not impleted: MAC {mac_addr}")
+
+
+@router.command()
+def remove(mac_addr: str = typer.Argument(...)) -> None:
+    typer.echo(f"Not impleted: MAC {mac_addr}")
 
 
 async def _device():

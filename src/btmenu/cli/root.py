@@ -1,12 +1,12 @@
 import typer
 from btmenu.settings import settings
-from btmenu.cli.devices import router as device_router
+from btmenu.cli.device import router as device_router
 from btmenu.cli.adapter import router as adapter_router
 
 app = typer.Typer()
 
 
-app.add_typer(device_router, name="")
+app.add_typer(device_router, name="device")
 app.add_typer(adapter_router, name="adapter")
 
 
