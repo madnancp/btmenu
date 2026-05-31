@@ -1,11 +1,11 @@
 import json
-from typing import Literal
+from btmenu.constants import PowerState
 from btmenu.core.base import BtMenuBaseDBusClient
 from dbus_next import Variant
 
 
 class BtMenuAdapterClient(BtMenuBaseDBusClient):
-    async def get_adapter_details(self) -> str:
+    async def get_info(self) -> str:
         proxy = await self.get_proxy()
 
         adapter = proxy.get_interface(
@@ -34,7 +34,7 @@ class BtMenuAdapterClient(BtMenuBaseDBusClient):
 
         return json_str
 
-    async def toggle_power(self, state: Literal["on", "off"]):
+    async def set_power(self, state: PowerState):
         proxy = await self.get_proxy()
 
         adapter = proxy.get_interface(
@@ -44,6 +44,6 @@ class BtMenuAdapterClient(BtMenuBaseDBusClient):
         await adapter.call_set(
             "org.bluez.Adapter1",
             "Powered",
-            Variant("b", True if state == "on" else False),
+            Variant("b", True if state == PowerState.ON else False),
         )
         return state
