@@ -6,7 +6,7 @@ router = typer.Typer()
 
 @router.command()
 def list() -> None:
-    typer.echo("Not impleted")
+    asyncio.run(_list_devices())
 
 
 @router.command()
@@ -44,10 +44,10 @@ def remove(mac_addr: str = typer.Argument(...)) -> None:
     typer.echo(f"Not impleted: MAC {mac_addr}")
 
 
-async def _device():
+async def _list_devices():
 
     from btmenu.core.device import BtMenuDeviceClient
 
     client = BtMenuDeviceClient()
-    info = await client.get_device_details(device_name="41_42_07_A0_1E_9B")
+    info = await client.list_devices()
     typer.echo(info)

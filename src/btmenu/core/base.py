@@ -8,7 +8,7 @@ class BtMenuBaseDBusClient:
         self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         introspection = await self.bus.introspect(
             "org.bluez",
-            "/org/bluez/hci0",
+            path,
         )
 
         return self.bus.get_proxy_object(
